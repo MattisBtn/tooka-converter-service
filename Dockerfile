@@ -6,8 +6,7 @@ RUN apk add --no-cache \
     imagemagick-dev \
     libraw \
     libraw-dev \
-    libraw-tools \
-    rawtherapee \
+    dcraw \
     ffmpeg
 
 # Configuration ImageMagick pour supporter les formats RAW
@@ -23,6 +22,6 @@ RUN npm ci --only=production
 # Copie du code source
 COPY . .
 
-EXPOSE 3000
+EXPOSE $PORT
 
 CMD ["npm", "start"]

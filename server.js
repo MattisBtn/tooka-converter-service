@@ -129,7 +129,8 @@ app.get('/status/:imageId', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
+app.listen(port, '0.0.0.0', () => {
   console.log(`🚀 Conversion API running on port ${port}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Railway URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}`);
 });
