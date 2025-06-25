@@ -6,7 +6,8 @@ RUN apk add --no-cache \
     imagemagick-dev \
     libraw \
     libraw-dev \
-    dcraw \
+    libraw-tools \
+    rawtherapee \
     ffmpeg
 
 # Configuration ImageMagick pour supporter les formats RAW
