@@ -12,7 +12,10 @@ class ConversionService {
   async convertImage(imageRecord, supabase) {
     const tempId = uuidv4();
     const tempDir = os.tmpdir();
-    const downloadPath = path.join(tempDir, `${tempId}_source`);
+    
+    // IMPORTANT: Ajouter l'extension du fichier source pour que ImageMagick puisse l'identifier
+    const sourceExt = this.getFileExtension(imageRecord.source_file_url) || imageRecord.source_format;
+    const downloadPath = path.join(tempDir, `${tempId}_source.${sourceExt}`);
     const convertedPath = path.join(tempDir, `${tempId}.${imageRecord.target_format}`);
 
     try {
@@ -22,12 +25,28 @@ class ConversionService {
       // 1. Télécharger le fichier source depuis Supabase
       const sourceBuffer = await this.downloadFromSupabase(imageRecord.source_file_url, supabase);
       await fs.writeFile(downloadPath, sourceBuffer);
-      console.log(`Downloaded to: ${downloadPath}`);
+      console.log(`Downloaded to: ${downloadPath} (${sourceBuffer.length} bytes)`);
+
+      // Vérifier que le fichier existe et a du contenu
+      const stats = await fs.stat(downloadPath);
+      console.log(`File size: ${stats.size} bytes`);
+      
+      if (stats.size === 0) {
+        throw new Error('Downloaded file is empty');
+      }
 
       // 2. Convertir le fichier
       await this.performConversion(downloadPath, convertedPath, imageRecord);
 
-      // 3. Uploader le fichier converti
+      // 3. Vérifier que la conversion a produit un fichier
+      const convertedStats = await fs.stat(convertedPath);
+      console.log(`Converted file size: ${convertedStats.size} bytes`);
+      
+      if (convertedStats.size === 0) {
+        throw new Error('Conversion produced empty file');
+      }
+
+      // 4. Uploader le fichier converti
       const convertedUrl = await this.uploadToSupabase(
         convertedPath, 
         imageRecord.source_file_url, 
@@ -35,7 +54,7 @@ class ConversionService {
         supabase
       );
 
-      // 4. Mettre à jour la base de données
+      // 5. Mettre à jour la base de données
       const { error: updateError } = await supabase
         .from('selection_images')
         .update({
@@ -48,7 +67,7 @@ class ConversionService {
         throw new Error(`Database update failed: ${updateError.message}`);
       }
 
-      // 5. Nettoyer les fichiers temporaires
+      // 6. Nettoyer les fichiers temporaires
       await this.cleanup([downloadPath, convertedPath]);
 
       return {
@@ -58,14 +77,28 @@ class ConversionService {
       };
 
     } catch (error) {
+      console.error(`Conversion failed for image ${imageRecord.id}:`, error);
+      
       // Nettoyer en cas d'erreur
       await this.cleanup([downloadPath, convertedPath]);
+      
+      // Mettre à jour le statut d'erreur avec plus de détails
+      await supabase
+        .from('selection_images')
+        .update({ 
+          conversion_status: 'failed',
+          // Optionnel: ajouter une colonne error_message si elle existe
+        })
+        .eq('id', imageRecord.id);
+        
       throw error;
     }
   }
 
   async downloadFromSupabase(filePath, supabase) {
     try {
+      console.log(`Downloading: ${filePath}`);
+      
       const { data, error } = await supabase.storage
         .from(this.bucketName)
         .download(filePath);
@@ -74,7 +107,14 @@ class ConversionService {
         throw new Error(`Download failed: ${error.message}`);
       }
 
-      return Buffer.from(await data.arrayBuffer());
+      if (!data) {
+        throw new Error('No data received from download');
+      }
+
+      const buffer = Buffer.from(await data.arrayBuffer());
+      console.log(`Download successful: ${buffer.length} bytes`);
+      
+      return buffer;
     } catch (error) {
       throw new Error(`Failed to download file: ${error.message}`);
     }
@@ -85,12 +125,18 @@ class ConversionService {
       const sourceFormat = imageRecord.source_format.toLowerCase();
       const targetFormat = imageRecord.target_format.toLowerCase();
 
-      // Commande de conversion selon le format
+      // Commande de conversion optimisée pour les fichiers RAW
       let command;
 
-      if (['cr2', 'nef', 'arw', 'raf', 'orf', 'dng', 'rw2'].includes(sourceFormat)) {
-        // Formats RAW - utiliser ImageMagick avec libraw
-        command = `magick "${inputPath}" -quality 90 -strip "${outputPath}"`;
+      if (['cr2', 'nef', 'arw', 'raf', 'orf', 'dng', 'rw2', 'crw', 'pef', 'srw', 'x3f'].includes(sourceFormat)) {
+        // Formats RAW - utiliser ImageMagick avec paramètres optimisés pour .ARW
+        if (sourceFormat === 'arw') {
+          // Paramètres spécifiques pour les fichiers Sony .ARW
+          command = `magick "${inputPath}" -colorspace sRGB -auto-level -quality 95 -sampling-factor 4:2:0 "${outputPath}"`;
+        } else {
+          // Autres formats RAW
+          command = `magick "${inputPath}" -colorspace sRGB -auto-level -quality 90 -strip "${outputPath}"`;
+        }
       } else if (['heic', 'heif'].includes(sourceFormat)) {
         // Formats HEIC/HEIF
         command = `magick "${inputPath}" -quality 90 "${outputPath}"`;
@@ -99,15 +145,32 @@ class ConversionService {
         command = `magick "${inputPath}" -quality 90 "${outputPath}"`;
       }
 
-      console.log(`Executing: ${command}`);
+      console.log(`Executing conversion command: ${command}`);
 
-      exec(command, { timeout: 60000 }, (error, stdout, stderr) => {
+      // Augmenter le timeout pour les fichiers RAW volumineux
+      const timeout = sourceFormat === 'arw' ? 180000 : 120000; // 3 minutes pour ARW, 2 minutes pour autres
+
+      exec(command, { 
+        timeout,
+        maxBuffer: 1024 * 1024 * 50 // 50MB buffer pour les gros fichiers
+      }, (error, stdout, stderr) => {
         if (error) {
-          console.error(`Conversion error: ${error.message}`);
+          console.error(`Conversion error for ${sourceFormat}:`, error.message);
+          console.error(`Command: ${command}`);
+          console.error(`stdout: ${stdout}`);
           console.error(`stderr: ${stderr}`);
-          reject(new Error(`Conversion failed: ${error.message}`));
+          
+          // Erreurs spécifiques pour .ARW
+          if (sourceFormat === 'arw' && stderr.includes('no decode delegate')) {
+            reject(new Error(`ImageMagick libraw delegate missing for ARW files. stderr: ${stderr}`));
+          } else if (error.code === 'ETIMEDOUT') {
+            reject(new Error(`Conversion timeout (${timeout}ms) for ${sourceFormat} file`));
+          } else {
+            reject(new Error(`Conversion failed: ${error.message}. stderr: ${stderr}`));
+          }
         } else {
-          console.log(`Conversion successful: ${outputPath}`);
+          console.log(`Conversion successful for ${sourceFormat}: ${outputPath}`);
+          if (stdout) console.log(`stdout: ${stdout}`);
           resolve();
         }
       });
@@ -117,6 +180,7 @@ class ConversionService {
   async uploadToSupabase(filePath, originalPath, targetFormat, supabase) {
     try {
       const fileBuffer = await fs.readFile(filePath);
+      console.log(`Uploading converted file: ${fileBuffer.length} bytes`);
       
       // Générer le nouveau chemin (même dossier, nouveau nom avec format)
       const pathParts = originalPath.split('/');
@@ -139,10 +203,16 @@ class ConversionService {
         throw new Error(`Upload failed: ${error.message}`);
       }
 
+      console.log(`Upload successful: ${newPath}`);
       return newPath;
     } catch (error) {
       throw new Error(`Failed to upload converted file: ${error.message}`);
     }
+  }
+
+  getFileExtension(filePath) {
+    const parts = filePath.split('.');
+    return parts.length > 1 ? parts[parts.length - 1] : null;
   }
 
   getContentType(format) {
@@ -161,6 +231,7 @@ class ConversionService {
     for (const filePath of filePaths) {
       try {
         await fs.unlink(filePath);
+        console.log(`Cleaned up: ${filePath}`);
       } catch (error) {
         // Ignorer les erreurs de nettoyage
         console.warn(`Could not delete ${filePath}: ${error.message}`);
