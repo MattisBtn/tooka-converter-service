@@ -129,8 +129,11 @@ class ConversionService {
       let command;
 
       if (['cr2', 'nef', 'arw', 'raf', 'orf', 'dng', 'rw2', 'crw', 'pef', 'srw', 'x3f'].includes(sourceFormat)) {
-        // Formats RAW - utiliser ImageMagick avec paramètres optimisés pour .ARW
-        if (sourceFormat === 'arw') {
+        // Formats RAW - stratégie différente pour DNG
+        if (sourceFormat === 'dng') {
+          // Pour DNG, utiliser dcraw en pipeline avec ImageMagick
+          command = `dcraw -c -w -T "${inputPath}" | magick - -colorspace sRGB -auto-level -quality 90 -strip "${outputPath}"`;
+        } else if (sourceFormat === 'arw') {
           // Paramètres spécifiques pour les fichiers Sony .ARW
           command = `magick "${inputPath}" -colorspace sRGB -auto-level -quality 95 -sampling-factor 4:2:0 "${outputPath}"`;
         } else {
@@ -148,7 +151,7 @@ class ConversionService {
       console.log(`Executing conversion command: ${command}`);
 
       // Augmenter le timeout pour les fichiers RAW volumineux
-      const timeout = sourceFormat === 'arw' ? 180000 : 120000; // 3 minutes pour ARW, 2 minutes pour autres
+      const timeout = ['arw', 'dng'].includes(sourceFormat) ? 180000 : 120000; // 3 minutes pour ARW/DNG, 2 minutes pour autres
 
       exec(command, { 
         timeout,
@@ -160,9 +163,18 @@ class ConversionService {
           console.error(`stdout: ${stdout}`);
           console.error(`stderr: ${stderr}`);
           
-          // Erreurs spécifiques pour .ARW
-          if (sourceFormat === 'arw' && stderr.includes('no decode delegate')) {
-            reject(new Error(`ImageMagick libraw delegate missing for ARW files. stderr: ${stderr}`));
+          // Fallback pour DNG si la première méthode échoue
+          if (sourceFormat === 'dng' && !command.includes('dcraw')) {
+            console.log('Trying fallback DNG conversion with dcraw...');
+            this.performDngFallbackConversion(inputPath, outputPath, imageRecord)
+              .then(resolve)
+              .catch(reject);
+            return;
+          }
+          
+          // Erreurs spécifiques
+          if (['arw', 'dng'].includes(sourceFormat) && stderr.includes('no decode delegate')) {
+            reject(new Error(`ImageMagick libraw delegate missing for ${sourceFormat.toUpperCase()} files. stderr: ${stderr}`));
           } else if (error.code === 'ETIMEDOUT') {
             reject(new Error(`Conversion timeout (${timeout}ms) for ${sourceFormat} file`));
           } else {
@@ -171,6 +183,37 @@ class ConversionService {
         } else {
           console.log(`Conversion successful for ${sourceFormat}: ${outputPath}`);
           if (stdout) console.log(`stdout: ${stdout}`);
+          resolve();
+        }
+      });
+    });
+  }
+
+  async performDngFallbackConversion(inputPath, outputPath, imageRecord) {
+    return new Promise((resolve, reject) => {
+      // Méthode alternative pour DNG : dcraw -> TIFF -> JPEG
+      const tempTiffPath = inputPath.replace('.dng', '_temp.tiff');
+      const command = `dcraw -T -w "${inputPath}" && magick "${tempTiffPath}" -colorspace sRGB -auto-level -quality 90 -strip "${outputPath}"`;
+      
+      console.log(`Executing DNG fallback conversion: ${command}`);
+      
+      exec(command, { 
+        timeout: 180000,
+        maxBuffer: 1024 * 1024 * 50
+      }, async (error, stdout, stderr) => {
+        // Nettoyer le fichier TIFF temporaire
+        try {
+          await fs.unlink(tempTiffPath);
+        } catch (cleanupError) {
+          console.warn(`Could not clean up temp TIFF: ${cleanupError.message}`);
+        }
+        
+        if (error) {
+          console.error(`DNG fallback conversion failed:`, error.message);
+          console.error(`stderr: ${stderr}`);
+          reject(new Error(`DNG fallback conversion failed: ${error.message}. stderr: ${stderr}`));
+        } else {
+          console.log(`DNG fallback conversion successful: ${outputPath}`);
           resolve();
         }
       });

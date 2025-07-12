@@ -7,12 +7,19 @@ RUN apk add --no-cache \
     libraw \
     libraw-dev \
     libraw-tools \
+    dcraw \
     rawtherapee \
-    ffmpeg
+    ffmpeg \
+    file
 
 # Configuration ImageMagick pour supporter les formats RAW
 RUN echo '<policy domain="coder" rights="read|write" pattern="*" />' >> /etc/ImageMagick-7/policy.xml && \
-    echo '<policy domain="delegate" rights="read|write" pattern="*" />' >> /etc/ImageMagick-7/policy.xml
+    echo '<policy domain="delegate" rights="read|write" pattern="*" />' >> /etc/ImageMagick-7/policy.xml && \
+    echo '<policy domain="resource" name="memory" value="1GB"/>' >> /etc/ImageMagick-7/policy.xml && \
+    echo '<policy domain="resource" name="disk" value="2GB"/>' >> /etc/ImageMagick-7/policy.xml
+
+# Vérifier le support des formats RAW
+RUN magick identify -list format | grep -i dng || echo "DNG format check completed"
 
 WORKDIR /app
 
