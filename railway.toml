@@ -5,4 +5,5 @@ builder = "dockerfile"
 startCommand = "npm start"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
-restartPolicyType = "on_failure"
+restartPolicyType = "always"
+restartPolicyMaxRetries = 3
