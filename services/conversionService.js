@@ -131,8 +131,8 @@ class ConversionService {
       if (['cr2', 'nef', 'arw', 'raf', 'orf', 'dng', 'rw2', 'crw', 'pef', 'srw', 'x3f'].includes(sourceFormat)) {
         // Formats RAW - stratégie différente pour DNG
         if (sourceFormat === 'dng') {
-          // Pour DNG, utiliser dcraw_emu (libraw-tools) en pipeline avec ImageMagick
-          command = `dcraw_emu -c -w -T "${inputPath}" | magick - -colorspace sRGB -auto-level -quality 90 -strip "${outputPath}"`;
+          // Pour DNG, utiliser ImageMagick directement (libraw delegate devrait être configuré)
+          command = `magick "${inputPath}" -colorspace sRGB -auto-level -quality 90 -strip "${outputPath}"`;
         } else if (sourceFormat === 'arw') {
           // Paramètres spécifiques pour les fichiers Sony .ARW
           command = `magick "${inputPath}" -colorspace sRGB -auto-level -quality 95 -sampling-factor 4:2:0 "${outputPath}"`;
@@ -164,7 +164,7 @@ class ConversionService {
           console.error(`stderr: ${stderr}`);
           
           // Fallback pour DNG si la première méthode échoue
-          if (sourceFormat === 'dng' && !command.includes('dcraw_emu')) {
+          if (sourceFormat === 'dng' && command.includes('magick')) {
             console.log('Trying fallback DNG conversion with dcraw_emu...');
             this.performDngFallbackConversion(inputPath, outputPath, imageRecord)
               .then(resolve)
@@ -191,9 +191,9 @@ class ConversionService {
 
   async performDngFallbackConversion(inputPath, outputPath, imageRecord) {
     return new Promise((resolve, reject) => {
-      // Méthode alternative pour DNG : dcraw_emu -> TIFF -> JPEG
+      // Méthode alternative pour DNG : utiliser dcraw_emu pour extraire vers TIFF puis convertir
       const tempTiffPath = inputPath.replace('.dng', '_temp.tiff');
-      const command = `dcraw_emu -T -w "${inputPath}" && magick "${tempTiffPath}" -colorspace sRGB -auto-level -quality 90 -strip "${outputPath}"`;
+      const command = `dcraw_emu -w -T "${inputPath}" -o 1 && magick "${tempTiffPath}" -colorspace sRGB -auto-level -quality 90 -strip "${outputPath}"`;
       
       console.log(`Executing DNG fallback conversion: ${command}`);
       

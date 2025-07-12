@@ -15,7 +15,8 @@ RUN apk add --no-cache \
 RUN echo '<policy domain="coder" rights="read|write" pattern="*" />' >> /etc/ImageMagick-7/policy.xml && \
     echo '<policy domain="delegate" rights="read|write" pattern="*" />' >> /etc/ImageMagick-7/policy.xml && \
     echo '<policy domain="resource" name="memory" value="1GB"/>' >> /etc/ImageMagick-7/policy.xml && \
-    echo '<policy domain="resource" name="disk" value="2GB"/>' >> /etc/ImageMagick-7/policy.xml
+    echo '<policy domain="resource" name="disk" value="2GB"/>' >> /etc/ImageMagick-7/policy.xml && \
+    echo '<policy domain="path" rights="read|write" pattern="*" />' >> /etc/ImageMagick-7/policy.xml
 
 # Vérifier le support des formats RAW et la disponibilité des outils
 RUN magick identify -list format | grep -i dng || echo "DNG format check completed" && \
